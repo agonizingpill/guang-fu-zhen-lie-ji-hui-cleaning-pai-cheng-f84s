@@ -14,7 +14,9 @@ def train_reference():
     train_x,test_x,train_y,test_y=train_test_split(x,y,test_size=.2,random_state=42)
     model=RandomForestRegressor(n_estimators=100,max_depth=8,min_samples_leaf=2,random_state=42,n_jobs=1)
     model.fit(train_x,train_y)
-    evidence={'reference_rows':len(rows),'train_rows':len(train_x),'test_rows':len(test_x),'train_mae_kw':float(mean_absolute_error(train_y,model.predict(train_x))),'holdout_mae_kw':float(mean_absolute_error(test_y,model.predict(test_x))),'feature_importance':dict(zip(FEATURES,model.feature_importances_.tolist())),'random_state':42,'sha256':hashlib.sha256(raw).hexdigest(),'method':'RandomForestRegressor / 100 trees / max_depth 8'}
+    holdout_predict=model.predict(test_x)
+    residuals=holdout_predict-test_y
+    evidence={'reference_rows':len(rows),'train_rows':len(train_x),'test_rows':len(test_x),'train_mae_kw':float(mean_absolute_error(train_y,model.predict(train_x))),'holdout_mae_kw':float(mean_absolute_error(test_y,holdout_predict)),'holdout_residual_q90_kw':float(np.quantile(residuals,.9)),'feature_importance':dict(zip(FEATURES,model.feature_importances_.tolist())),'random_state':42,'sha256':hashlib.sha256(raw).hexdigest(),'method':'RandomForestRegressor / 100 trees / max_depth 8'}
     return model,evidence
 
 def estimate(survey):
@@ -23,3 +25,7 @@ def estimate(survey):
     clean=max(0,float(model.predict([[getattr(survey,k) for k in FEATURES]])[0]))
     loss=max(0,clean-survey.observed_kw)
     return clean,loss,evidence
+
+# 高估损会挤占班组工时：用独立留出残差q90把点估计压成保守下界，不用训练误差代替泛化误差。
+def conservative_loss(loss_kw,evidence):
+    return max(0.0,round(loss_kw-evidence.get('holdout_residual_q90_kw',0.0),4))

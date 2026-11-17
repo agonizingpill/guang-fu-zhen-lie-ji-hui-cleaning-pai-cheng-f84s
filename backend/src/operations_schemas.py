@@ -27,3 +27,5 @@ class SettlementInput(Inputs):
     price_per_kw:float=Field(gt=0,le=100000)
     cost_per_liter:float=Field(ge=0,le=10000)
     negative_reason:str=Field(default='',max_length=400)
+class BatchPreviewInput(Inputs):
+    work_date:date

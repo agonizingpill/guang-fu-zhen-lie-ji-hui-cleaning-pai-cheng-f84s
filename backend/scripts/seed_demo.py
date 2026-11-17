@@ -1,10 +1,11 @@
-from datetime import datetime,timedelta
+from datetime import datetime,timedelta,date
 from sqlalchemy import select,func
 from src.database import Base,engine,Session
 from src.models import User,ArrayBlock,SoilingSurvey,WashMission
 from src.revisit_models import WaterDelivery,FollowupSurvey
 from src.auth import hash_password
-from src.operations_models import WashCrew
+from src.operations_models import WashCrew,WorkPermit
+from src.power_model import estimate
 
 def seed():
     Base.metadata.create_all(engine)
@@ -35,5 +36,28 @@ def seed():
             db.add(mission);db.flush()
         if not db.scalar(select(FollowupSurvey).where(FollowupSurvey.mission_id==mission.id,FollowupSurvey.days_after==2)):
             db.add(FollowupSurvey(mission_id=mission.id,days_after=2,irradiance=800,observed_kw=61,normalized_kw=61,normalized_loss=100/62,state='stable',baseline_snapshot={'post_kw':62,'post_irradiance':800,'accepted_at':mission.accepted_at.isoformat(),'block_id':block.id,'block_code':block.code,'survey_id':historical.id,'survey_code':historical.code,'threshold_pct':5}))
+        # 第四轮组合排程演示：真实模型评估的当日候选，含工时竞争、同阵列互斥与水额不足情形。
+        extra=[('SV-1117-B01','SL-B01',780,31,20,2.8,62),('SV-1117-B01B','SL-B01',790,32,20,3.4,58),('SV-1117-C01','SL-C01',760,30,9,1.9,48),('SV-1117-C01B','SL-C01',750,29,9,2.2,53)]
+        for code,block_code,irr,temp,rain,dust,power in extra:
+            if not db.scalar(select(SoilingSurvey).where(SoilingSurvey.code==code)):
+                blk=db.scalar(select(ArrayBlock).where(ArrayBlock.code==block_code))
+                sv=SoilingSurvey(code=code,block_id=blk.id,capacity_kw=blk.capacity_kw,slope=blk.slope,irradiance=irr,module_temp=temp,rain_days=rain,dust=dust,observed_kw=power)
+                clean,loss,evidence=estimate(sv)
+                sv.clean_kw=clean;sv.predicted_loss=loss;sv.model_evidence=evidence
+                sv.recommended_water=round(blk.area_m2*.6*(1+.1*dust),1);sv.state='assessed'
+                db.add(sv)
+        db.flush()
+        for survey_code,water in [('SV-1117-B01',320),('SV-1117-B01B',340),('SV-1117-C01',260),('SV-1117-C01B',700)]:
+            sv=db.scalar(select(SoilingSurvey).where(SoilingSurvey.code==survey_code))
+            if sv and not db.scalar(select(WashMission).where(WashMission.survey_id==sv.id)):
+                blk=db.get(ArrayBlock,sv.block_id)
+                db.add(WashMission(survey_id=sv.id,water_liters=water,available_liters=blk.water_liters))
+        db.flush()
+        for survey_code,crew_code,minutes in [('SV-1117-B01','CREW-SOUTH',200),('SV-1117-B01B','CREW-SOUTH',380),('SV-1117-C01','CREW-SOUTH',180),('SV-1117-C01B','CREW-RIDGE',120)]:
+            sv=db.scalar(select(SoilingSurvey).where(SoilingSurvey.code==survey_code))
+            m=db.scalar(select(WashMission).where(WashMission.survey_id==sv.id)) if sv else None
+            crew=db.scalar(select(WashCrew).where(WashCrew.code==crew_code))
+            if m and crew and not db.scalar(select(WorkPermit).where(WorkPermit.mission_id==m.id)):
+                db.add(WorkPermit(mission_id=m.id,crew_id=crew.id,work_date=date.today(),minutes=minutes,wind_mps=4.5,isolation=True))
         db.commit();print({key:db.scalar(select(func.count()).select_from(model)) for key,model in [('users',User),('blocks',ArrayBlock),('surveys',SoilingSurvey)]})
 if __name__=='__main__':seed()
